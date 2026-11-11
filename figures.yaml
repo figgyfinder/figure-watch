@@ -7,7 +7,7 @@
 #  For each figure:
 #    name:          what you call it (shown in Discord)
 #    search:        words to search for (Japanese works best)
-#    jan:           (optional) box barcode – very accurate on AmiAmi and Rakuten
+#    jan:           (optional) box barcode – very accurate on Rakuten
 #    max_price:     (optional) in yen – anything above is ignored
 #    must_include:  (optional) words the listing title MUST all contain.
 #                   If left out, every word of `search` must be in the title.
@@ -18,6 +18,7 @@
 #    type:          kit / doll / scale - what kind of item it is
 #    scale:         e.g. "1/7" - listings saying a different scale are ignored
 #    maker:         the maker/circle - listings naming another maker are ignored
+#    version:       e.g. ["メイド"] - outfit version; other outfits are ignored
 #    exclude:       (optional) words that rule a listing out
 #
 #  Exact matches alert normally. Listings with the right character that
@@ -84,16 +85,20 @@ figures:
   # ── Sayonara o Oshiete ────────────────────────────────────
 
   - name: "Sugamo Mutsuki 1/7 (Native)"                        # MFC 331664
-    search: "さよならを教えて 睦月"
+    # Searches the whole series: sellers often call her 天使様 (the Angel)
+    # instead of using her name.
+    search: "さよならを教えて"
+    jan: "4562271931507"
+    character: [["睦月", "巣鴨", "天使"], ["さよならを教えて", "さよ教"]]
     type: scale
     scale: "1/7"
     maker: ["ネイティブ", "Native"]
-    character: [["睦月"], ["さよならを教えて", "さよ教", "巣鴨"]]
-    must_include: ["睦月"]
-    include_any: [["さよならを教えて", "さよ教", "巣鴨"], ["ネイティブ", "Native", "1/7"]]
+    must_include: []
+    include_any: [["睦月", "巣鴨", "天使"], ["さよならを教えて", "さよ教"], ["フィギュア", "ネイティブ", "Native", "1/7"]]
+    exclude: ["ガレージキット", "ガレキ", "レジン", "キット"]
 
   - name: "Hitomi Hirosuke bust kit (-MU-U-MA-)"               # MFC 2922471
-    search: "さよならを教えて 人見"
+    search: "さよならを教えて"
     type: kit
     character: [["さよならを教えて", "さよ教"]]
     must_include: ["人見"]
@@ -130,6 +135,7 @@ figures:
 
   - name: "Oshino Shinobu Maidmade 1/7 (Miyuki)"               # MFC 1618604
     search: "忍野忍 メイド"
+    version: ["メイド"]
     type: scale
     scale: "1/7"
     maker: ["ミユキ", "Miyuki"]
@@ -182,11 +188,14 @@ settings:
   # Words that rule out a listing for EVERY figure (box only / empty box).
   # (merch that isn't a figure: posters, CDs, books, cards, keyrings...)
   exclude: ["箱のみ", "空箱", "外箱のみ",
-            "ポスター", "タペストリー", "ドラマCD", "CD", "DVD", "Blu-ray", "サントラ",
-            "漫画", "コミック", "小説", "文庫", "画集", "設定資料", "ムック",
-            "トレカ", "シングルカード", "遊戯王", "ポケカ", "テレカ", "テレホンカード", "色紙", "下敷き",
-            "クリアファイル", "缶バッジ", "アクスタ", "アクリルスタンド", "アクリルキーホルダー",
-            "キーホルダー", "ストラップ", "ラバー", "抱き枕", "マウスパッド", "Tシャツ"]
+            "ポスター", "タペストリー", "ドラマCD", "CD", "DVD", "Blu-ray", "ブルーレイ", "サントラ", "サウンドトラック",
+            "漫画", "コミック", "小説", "文庫", "画集", "イラスト集", "アートブック", "ファンブック", "設定資料", "ムック", "同人誌",
+            "トレカ", "トレーディングカード", "シングルカード", "遊戯王", "ポケカ", "テレカ", "テレホンカード", "色紙",
+            "ポストカード", "イラストカード", "クリアカード", "ブロマイド", "下敷き", "クリアファイル", "缶バッジ", "バッジ",
+            "ステッカー", "プレート", "アクスタ", "アクリルスタンド", "アクリルキーホルダー", "キーホルダー", "キーチェーン",
+            "ストラップ", "ラバー", "抱き枕", "枕カバー", "クッション", "タオル", "ブランケット", "マウスパッド", "プレイマット",
+            "Tシャツ", "パーカー", "トートバッグ", "スマホケース", "ボールペン", "トランプ", "マグカップ", "タンブラー",
+            "フィギュアケース", "展示ケース", "コレクションケース", "コスプレ"]
 
   # @everyone ping for NEWLY LISTED items (restocks / price drops never ping):
   #   exact = only exact matches

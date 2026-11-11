@@ -186,15 +186,21 @@ class SiteBlocked(Exception):
     pass
 
 
-def search_yahoo(session, query):
+def search_yahoo(session, query, kind=None):
     url = (
         "https://auctions.yahoo.co.jp/search/search?p={q}&va={q}"
         "&s1=new&o1=d&n=50&b=1&exflg=1"
     ).format(q=quote(query))
+    if kind == "scale":
+        url += "&auccat=25888"  # Yahoo's figure category
     resp = session.get(url, headers=HEADERS, timeout=30)
     if looks_blocked(resp) or "ご利用いただけません" in resp.text[:5000]:
         raise SiteBlocked(f"Yahoo blocked the request (HTTP {resp.status_code})")
     resp.raise_for_status()
+    # With no exact results Yahoo shows "related" listings under a notice;
+    # those are the loose junk matches, so treat it as no results.
+    if "Notice__wandText" in resp.text or "に一致する商品はありません" in resp.text:
+        return []
     pattern = re.compile(r"auctions\.yahoo\.co\.jp/jp/auction/([A-Za-z]?\d{6,})")
     return extract_items(resp.text, url, pattern)
 
@@ -255,7 +261,7 @@ class Mercari:
         sig = r.to_bytes(32, "big") + s.to_bytes(32, "big")
         return signing_input + "." + _b64(sig)
 
-    def search(self, session, query):
+    def search(self, session, query, kind=None):
         body = {
             "userId": "",
             "pageSize": 60,
@@ -269,7 +275,8 @@ class Mercari:
                 "sort": "SORT_CREATED_TIME",
                 "order": "ORDER_DESC",
                 "status": ["STATUS_ON_SALE"],
-                "sizeId": [], "categoryId": [], "brandId": [], "sellerId": [],
+                "sizeId": [], "categoryId": [81] if kind == "scale" else [],
+                "brandId": [], "sellerId": [],
                 "priceMin": 0, "priceMax": 0,
                 "itemConditionId": [], "shippingPayerId": [], "shippingFromArea": [],
                 "shippingMethod": [], "colorId": [], "hasCoupon": False,
@@ -321,11 +328,20 @@ class Mercari:
         return out
 
 
-def search_amiami(session, query):
+def search_amiami(session, query, kind=None):
     """AmiAmi's own website search API (new, pre-order and pre-owned)."""
     resp = session.get(
         "https://api.amiami.com/api/v1.0/items",
-        params={"pagemax": 30, "pagecnt": 1, "lang": "jpn", "s_keywords": query},
+        params={
+            "pagemax": 30, "pagecnt": 1, "lang": "jpn", "s_keywords": query,
+            # include 18+ items (several watched figures are) and all
+            # orderable stock: new, pre-order, back-order and pre-owned
+            "age_confirm": "true",
+            "s_st_list_preorder_available": 1,
+            "s_st_list_backorder_available": 1,
+            "s_st_list_newitem_available": 1,
+            "s_st_condition_flg": 1,
+        },
         headers={
             "User-Agent": BROWSER_UA,
             "Accept": "application/json",
@@ -367,14 +383,23 @@ def search_amiami(session, query):
     return out
 
 
-def search_mandarake(session, query):
-    url = "https://order.mandarake.co.jp/order/listPage/list?keyword={q}".format(q=quote(query))
+def search_mandarake(session, query, kind=None):
+    category = {"kit": "020107", "scale": "02", "doll": "02"}.get(kind, "")
+    url = "https://order.mandarake.co.jp/order/listPage/list?soldOut=1&keyword={q}".format(q=quote(query))
+    if category:
+        url += f"&categoryCode={category}"
     resp = session.get(url, headers=HEADERS, timeout=30)
     if looks_blocked(resp):
         raise SiteBlocked(f"Mandarake blocked the request (HTTP {resp.status_code})")
     resp.raise_for_status()
+    # 18+ items have no normal link: Mandarake puts the item code in the id
+    # of an "adult_link" element instead. Give those a real link.
+    soup = BeautifulSoup(resp.text, "html.parser")
+    for a in soup.select("a.adult_link[id]"):
+        if a["id"].isdigit():
+            a["href"] = f"/order/detailPage/item?itemCode={a['id']}"
     pattern = re.compile(r"mandarake\.co\.jp/order/detailPage/item\?itemCode=(\d+)")
-    items = extract_items(resp.text, url, pattern)
+    items = extract_items(str(soup), url, pattern)
     sold = ("売り切れ", "SOLD OUT", "Sold out", "在庫なし")
     return [i for i in items if not any(s in i["text"] for s in sold)]
 
@@ -509,10 +534,25 @@ def _b64(data):
 # Matching
 # ---------------------------------------------------------------------------
 
+_PUNCT = re.compile(r"[\s・･、。，,.!！?？~～〜「」『』()（）【】\[\]<>＜＞《》\"'`♡♥☆★※:：;；|｜&＆+＋_#＃-]")
+
+
 def normalise(s):
-    # Full-width letters/numbers -> normal, lower case, no spaces.
+    """Full-width -> normal, hiragana -> katakana, lower case, no spaces or
+    punctuation (but "/" is kept so scales like 1/7 survive)."""
     import unicodedata
-    return re.sub(r"\s+", "", unicodedata.normalize("NFKC", s or "")).lower()
+    s = unicodedata.normalize("NFKC", s or "")
+    s = "".join(chr(ord(c) + 0x60) if "\u3041" <= c <= "\u3096" else c for c in s)
+    return _PUNCT.sub("", s).lower()
+
+
+_BONUS = re.compile(r"[^\s()（）【】\[\]]*(?:付き|付|つき|おまけ)")
+
+
+def strip_bonus(title):
+    """Remove "comes with X" phrases (特典ポストカード付, 箱付き...) so a real
+    figure isn't thrown out as merch because of a bonus item."""
+    return _BONUS.sub(" ", title or "")
 
 
 def _groups(words):
@@ -526,21 +566,77 @@ def _has_each_group(title, groups):
     return all(any(normalise(w) in title for w in g) for g in groups)
 
 
+def _flat(words):
+    out = []
+    for w in words or []:
+        out.extend(_flat(w) if isinstance(w, list) else [str(w)])
+    return out
+
+
+def contradiction(item, figure):
+    """Return a reason if the title shows this is a DIFFERENT item
+    (another product line, maker, scale, outfit, bootleg, doll clothes...)."""
+    raw = strip_bonus(item["title"])
+    title = normalise(raw)
+    own = normalise(" ".join(
+        [figure.get("name", ""), figure.get("search", "")]
+        + _flat(figure.get("maker")) + _flat(figure.get("version"))
+        + _flat(figure.get("include_any")) + _flat(figure.get("must_include"))
+    ))
+    for w in OTHER_LINES:
+        nw = normalise(w)
+        if nw and nw in title and nw not in own:
+            return f"other product line ({w})"
+    for w in BOOTLEG_WORDS:
+        if normalise(w) in title:
+            return f"bootleg ({w})"
+    kind = figure.get("type")
+    if kind == "doll":
+        for w in DOLL_ACCESSORY_WORDS:
+            if normalise(w) in title:
+                return f"doll accessory ({w})"
+    if kind == "scale" and any(normalise(w) in title for w in KIT_WORDS) and "ガレージキット" not in own:
+        return "garage kit"
+    scale = figure.get("scale")
+    if scale:
+        scales = set(re.findall(r"1/\d+", title))
+        if scales and normalise(scale) not in scales:
+            return f"different scale ({', '.join(sorted(scales))})"
+    own_makers = [normalise(m) for m in _flat(figure.get("maker"))]
+    for m in KNOWN_MAKERS:
+        nm = normalise(m)
+        if nm in title and not any(nm in o or o in nm for o in own_makers):
+            return f"different maker ({m})"
+    # Outfit versions (swimsuit, bunny, maid...). For exact matches this only
+    # applies when the figure lists its own version; the "possible match"
+    # check always applies it.
+    for group in VERSION_WORDS:
+        hit = [w for w in group if normalise(w) in title]
+        if hit and not any(normalise(w) in own for w in group):
+            return f"different version ({hit[0]})" if figure.get("version") else f"maybe-version ({hit[0]})"
+    return None
+
+
 def match_level(item, figure, global_exclude, figure_words):
     """Returns "exact", "maybe" (right character + looks like a figure, but
     maker/version not confirmed), or None (not relevant)."""
-    title = normalise(item["title"])
+    raw = strip_bonus(item["title"])
+    title = normalise(raw)
     for word in list(figure.get("exclude") or []) + list(global_exclude or []):
         if normalise(word) and normalise(word) in title:
             return None
     max_price = figure.get("max_price")
     if max_price and item["price"] and item["price"] > int(max_price):
         return None
+    why_not = contradiction(item, figure)
+    if why_not and not why_not.startswith("maybe-"):
+        return None
     if matches(item, figure, []):
         return "exact"
+    if why_not:
+        return None  # outfit version differs and nothing confirms it
 
-    # --- "Possible match" checks: only when nothing contradicts it ---
-    # 1. Right character
+    # --- "Possible match": right character and right kind of item ---
     character = figure.get("character")
     if character:
         char_ok = _has_each_group(title, _groups(character))
@@ -551,43 +647,15 @@ def match_level(item, figure, global_exclude, figure_words):
         char_ok = bool(must) and all(normalise(w) in title for w in must)
     if not char_ok:
         return None
-
-    # 2. Right kind of item (kit / doll / scale figure)
     kind = figure.get("type")
     type_words = TYPE_WORDS.get(kind, figure_words)
     if not any(normalise(w) in title for w in type_words):
         return None
-    if kind == "scale" and any(normalise(w) in title for w in TYPE_WORDS["kit"]):
-        return None  # a garage kit of the same character, not this figure
-
-    own_words = " ".join(
-        normalise(str(w)) for w in
-        [figure.get("search", "")] + list(figure.get("maker") or [])
-    )
-    # 3. Not a different product line (nendoroid, prize, plush, gacha...)
-    for w in OTHER_LINES:
-        if normalise(w) in title and normalise(w) not in own_words:
-            return None
-
-    # 4. Not a different scale
-    scale = figure.get("scale")
-    if scale:
-        scales = set(re.findall(r"1/\d+", title))
-        if scales and normalise(scale) not in scales:
-            return None
-
-    # 5. Not a different maker
-    own_makers = [normalise(m) for m in (figure.get("maker") or [])]
-    for m in KNOWN_MAKERS:
-        nm = normalise(m)
-        if nm in title and not any(nm in o or o in nm for o in own_makers):
-            return None
-
     return "maybe"
 
 
 def matches(item, figure, global_exclude):
-    title = normalise(item["title"])
+    title = normalise(strip_bonus(item["title"]))
     for word in list(figure.get("exclude") or []) + list(global_exclude or []):
         if normalise(word) and normalise(word) in title:
             return False
@@ -763,11 +831,14 @@ TYPE_WORDS = {
 # Other product lines - a "possible match" mentioning these is a different
 # figure of the same character, so it's ignored.
 OTHER_LINES = [
-    "ねんどろいど", "ねんどろ", "figma", "プライズ", "一番くじ", "ぬいぐるみ", "ぬい",
+    "ねんどろいど", "ねんどろ", "figma", "プライズ", "一番くじ", "ぬいぐるみ",
     "ちびきゅん", "ぷちきゃら", "POP UP PARADE", "ポップアップパレード", "ちょこのせ",
     "デフォルメ", "SPM", "Coreful", "ルミナスタ", "ガチャ", "カプセル", "食玩",
     "ラバスト", "トレーディング", "ミニフィギュア", "BiCute", "ぬーどるストッパー",
-    "アクリル", "ジオラマ", "ぴたぬい",
+    "アクリル", "ジオラマ", "ぴたぬい", "ぬいパル", "寝そべり", "ねそべり", "フィギュアーツ",
+    "キューポッシュ", "Qposket", "ちびぐるみ", "ミニコレ", "ぺたん娘", "まめしき", "フィギュアライズ",
+    "ガシャポン", "クレーンゲーム", "ちょこのっこ", "デスクトップキュート", "ぬーどる", "ひっかけ",
+    "テニトル", "プーリップ", "ワーコレ", "WCF", "超合金", "マスコット",
 ]
 
 # Figure makers - a "possible match" naming a maker that isn't this figure's
@@ -784,6 +855,24 @@ KNOWN_MAKERS = [
     "ケイズファクトリー", "ベルファイン", "ヴェルテクス", "Vertex", "ensoutoys",
     "ホットトイズ", "海洋堂", "エンブレイスジャパン", "オルカトイズ", "アオシマ",
 ]
+
+# Outfit versions: a listing naming one of these is a different version of
+# the character unless the figure itself is that version.
+VERSION_WORDS = [
+    ["水着", "スイムスーツ"], ["ビキニ"], ["バニー"], ["チャイナドレス", "チャイナ服"],
+    ["ネグリジェ"], ["メイド"], ["浴衣"], ["着物", "振袖"], ["ナース"], ["サンタ"],
+    ["ウェディング", "花嫁"], ["体操服", "ブルマ"], ["スクール水着", "スク水"],
+]
+
+# Clear signs of an unofficial copy.
+BOOTLEG_WORDS = ["中国版", "CN版", "CNver", "Chinaver", "海外版", "非正規", "海賊版", "互換品",
+                 "コピー品", "レプリカ", "複製品", "パチモン"]
+
+# Doll outfits/parts sold on their own (for Dollfie Dream watches).
+DOLL_ACCESSORY_WORDS = ["衣装", "制服セット", "アウトフィット", "ウィッグ", "ドール用", "DD用", "DDdy用",
+                        "DDS用", "DDP用", "MDD用", "SD用", "ドレスセット", "シューズ", "靴",
+                        "ドールアイ", "アイのみ", "ヘッドのみ", "ボディのみ", "カスタムヘッド",
+                        "メイク済みヘッド", "コスプレ", "ハンガー", "スタンド単品"]
 
 # On the very first check, show at most this many current listings per site.
 MAX_FIRST_RUN_PER_SITE = 20
@@ -852,10 +941,11 @@ def run(dry_run=False, show_all=False):
     fig = {}
 
     def search_site(site, query):
+        kind = fig.get("type")
         if site == "mercari":
-            return mercari.search(session, query)
+            return mercari.search(session, query, kind)
         if site == "yahoo":
-            return search_yahoo(session, query)
+            return search_yahoo(session, query, kind)
         if site == "surugaya":
             return search_surugaya(session, query)
         if site == "yahooflea":
@@ -863,9 +953,9 @@ def run(dry_run=False, show_all=False):
         if site == "rakuma":
             return search_rakuma(session, query)
         if site == "amiami":
-            return search_amiami(session, query)
+            return search_amiami(session, query, kind)
         if site == "mandarake":
-            return search_mandarake(session, query)
+            return search_mandarake(session, query, kind)
         return search_rakuten(session, query, fig.get("max_price"))
 
     for fig in figures:
