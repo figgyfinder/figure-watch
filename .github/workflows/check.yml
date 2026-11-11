@@ -1,0 +1,67 @@
+name: Figure watch
+
+on:
+  schedule:
+    # Every 30 minutes (at :07 and :37 – GitHub is busiest on the hour).
+    - cron: "7,37 * * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "What to do"
+        type: choice
+        default: normal
+        options:
+          - normal
+          - test-discord
+          - dry-run
+
+permissions:
+  contents: write   # to save which listings have already been seen
+  actions: write    # to stop GitHub switching the schedule off after 60 days
+
+concurrency:
+  group: figure-watch
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install -r requirements.txt
+
+      - name: Check the sites
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          RAKUTEN_APP_ID: ${{ secrets.RAKUTEN_APP_ID }}
+          RAKUTEN_ACCESS_KEY: ${{ secrets.RAKUTEN_ACCESS_KEY }}
+          RAKUTEN_REFERER: ${{ secrets.RAKUTEN_REFERER }}
+        run: python watch.py --mode "${{ inputs.mode || 'normal' }}"
+
+      - name: Save what was seen
+        if: ${{ (inputs.mode || 'normal') == 'normal' }}
+        run: |
+          git config user.name "figure-watch"
+          git config user.email "figure-watch@users.noreply.github.com"
+          git add state/seen.json
+          if git diff --cached --quiet; then
+            echo "Nothing changed"
+          else
+            git commit -m "Update seen listings"
+            git pull --rebase --autostash
+            git push
+          fi
+
+      - name: Keep the schedule switched on
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/check.yml/enable" || true
