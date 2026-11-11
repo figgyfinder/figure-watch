@@ -187,6 +187,53 @@ class SiteBlocked(Exception):
 
 
 def search_yahoo(session, query, kind=None):
+    """Yahoo Auctions, read through Buyee (Yahoo's own search page doesn't
+    give the bot readable results). Falls back to Yahoo directly."""
+    try:
+        return search_yahoo_via_buyee(session, query, kind)
+    except SiteBlocked:
+        raise
+    except Exception as e:  # noqa: BLE001
+        log(f"  (Buyee didn't work for Yahoo: {e}; trying Yahoo directly)")
+        return search_yahoo_direct(session, query, kind)
+
+
+def search_yahoo_via_buyee(session, query, kind=None):
+    q = query + (" フィギュア" if kind == "scale" and "フィギュア" not in query else "")
+    url = "https://buyee.jp/item/search/query/{q}".format(q=quote(q))
+    resp = session.get(url, headers=HEADERS, timeout=30)
+    if looks_blocked(resp):
+        raise SiteBlocked(f"Buyee blocked the request (HTTP {resp.status_code})")
+    if resp.status_code == 404:
+        return []
+    resp.raise_for_status()
+    soup = BeautifulSoup(resp.text, "html.parser")
+    out = []
+    for card in soup.select("li.itemCard"):
+        a = card.select_one('a[href*="/item/jdirectitems/auction/"]')
+        if a is None:
+            continue  # flea-market items etc. - only Yahoo Auctions here
+        m = re.search(r"/auction/([A-Za-z]?\d{6,})", a["href"])
+        if not m:
+            continue
+        iid = m.group(1)
+        name_el = card.select_one(".itemCard__itemName")
+        price_el = card.select_one(".g-price")
+        img = card.select_one("img")
+        image = img and (img.get("data-src") or img.get("src"))
+        title = name_el.get_text(" ", strip=True) if name_el else a.get_text(" ", strip=True)
+        out.append({
+            "id": iid,
+            "title": title,
+            "price": parse_price(price_el.get_text() if price_el else None),
+            "url": f"https://buyee.jp/item/jdirectitems/auction/{iid}",
+            "image": image if image and "spacer" not in image else None,
+            "text": card.get_text(" ", strip=True),
+        })
+    return out
+
+
+def search_yahoo_direct(session, query, kind=None):
     url = (
         "https://auctions.yahoo.co.jp/search/search?p={q}&va={q}"
         "&s1=new&o1=d&n=50&b=1&exflg=1"
