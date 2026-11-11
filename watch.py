@@ -420,6 +420,9 @@ def search_yahoo_flea(session, query):
     return [i for i in items if "SOLD" not in i["text"].upper()]
 
 
+RAKUMA_FIGURE_CATEGORIES = ["フィギュア", "ドール", "人形", "模型", "プラモデル", "キット"]
+
+
 def search_rakuma(session, query):
     url = (
         "https://fril.jp/s?query={q}&transaction=selling&sort=created_at&order=desc"
@@ -430,7 +433,20 @@ def search_rakuma(session, query):
     resp.raise_for_status()
     pattern = re.compile(r"item\.fril\.jp/([0-9a-f]{16,})")
     items = extract_items(resp.text, url, pattern)
-    return [i for i in items if "SOLD" not in i["text"].upper() and "売り切れ" not in i["text"]]
+    kept = []
+    for i in items:
+        # Rakuma link text is "<title> <category>の商品詳細ページへのリンク",
+        # e.g. "... エンタメ/ホビーのフィギュアの商品詳細ページへのリンク".
+        m = re.search(r"\s*(\S*)の商品詳細ページへのリンク\s*$", i["title"])
+        category = m.group(1) if m else ""
+        i["title"] = i["title"][:m.start()].strip() if m else i["title"].strip()
+        if "SOLD" in i["text"].upper() or "売り切れ" in i["text"]:
+            continue
+        # Use Rakuma's own category: only figures, dolls and models count.
+        if category and not any(w in category for w in RAKUMA_FIGURE_CATEGORIES):
+            continue
+        kept.append(i)
+    return kept
 
 
 def search_rakuten(session, query, max_price=None):
@@ -495,17 +511,98 @@ def normalise(s):
     return re.sub(r"\s+", "", unicodedata.normalize("NFKC", s or "")).lower()
 
 
+def _groups(words):
+    """["a","b"] -> [["a","b"]];  [["a"],["b","c"]] stays as is."""
+    if not words:
+        return []
+    return words if isinstance(words[0], list) else [words]
+
+
+def _has_each_group(title, groups):
+    return all(any(normalise(w) in title for w in g) for g in groups)
+
+
+def match_level(item, figure, global_exclude, figure_words):
+    """Returns "exact", "maybe" (right character + looks like a figure, but
+    maker/version not confirmed), or None (not relevant)."""
+    title = normalise(item["title"])
+    for word in list(figure.get("exclude") or []) + list(global_exclude or []):
+        if normalise(word) and normalise(word) in title:
+            return None
+    max_price = figure.get("max_price")
+    if max_price and item["price"] and item["price"] > int(max_price):
+        return None
+    if matches(item, figure, []):
+        return "exact"
+
+    # --- "Possible match" checks: only when nothing contradicts it ---
+    # 1. Right character
+    character = figure.get("character")
+    if character:
+        char_ok = _has_each_group(title, _groups(character))
+    else:
+        must = figure.get("must_include")
+        if must is None:
+            must = (figure.get("search") or "").split()
+        char_ok = bool(must) and all(normalise(w) in title for w in must)
+    if not char_ok:
+        return None
+
+    # 2. Right kind of item (kit / doll / scale figure)
+    kind = figure.get("type")
+    type_words = TYPE_WORDS.get(kind, figure_words)
+    if not any(normalise(w) in title for w in type_words):
+        return None
+    if kind == "scale" and any(normalise(w) in title for w in TYPE_WORDS["kit"]):
+        return None  # a garage kit of the same character, not this figure
+
+    own_words = " ".join(
+        normalise(str(w)) for w in
+        [figure.get("search", "")] + list(figure.get("maker") or [])
+    )
+    # 3. Not a different product line (nendoroid, prize, plush, gacha...)
+    for w in OTHER_LINES:
+        if normalise(w) in title and normalise(w) not in own_words:
+            return None
+
+    # 4. Not a different scale
+    scale = figure.get("scale")
+    if scale:
+        scales = set(re.findall(r"1/\d+", title))
+        if scales and normalise(scale) not in scales:
+            return None
+
+    # 5. Not a different maker
+    own_makers = [normalise(m) for m in (figure.get("maker") or [])]
+    for m in KNOWN_MAKERS:
+        nm = normalise(m)
+        if nm in title and not any(nm in o or o in nm for o in own_makers):
+            return None
+
+    return "maybe"
+
+
 def matches(item, figure, global_exclude):
     title = normalise(item["title"])
     for word in list(figure.get("exclude") or []) + list(global_exclude or []):
         if normalise(word) and normalise(word) in title:
             return False
-    for word in figure.get("must_include") or []:
+    # must_include: every word must be in the title. If a figure doesn't say,
+    # every word of its search must be in the title (sites like Rakuma pad
+    # results with loose partial matches otherwise).
+    must = figure.get("must_include")
+    if must is None:
+        must = (figure.get("search") or "").split()
+    for word in must:
         if normalise(word) not in title:
             return False
+    # include_any: at least one of these words. Can also be a list of lists,
+    # meaning "one word from EACH group".
     any_of = figure.get("include_any") or []
-    if any_of and not any(normalise(w) in title for w in any_of):
-        return False
+    groups = any_of if any_of and isinstance(any_of[0], list) else ([any_of] if any_of else [])
+    for group in groups:
+        if not any(normalise(w) in title for w in group):
+            return False
     max_price = figure.get("max_price")
     if max_price and item["price"] and item["price"] > int(max_price):
         return False
@@ -610,8 +707,13 @@ class Discord:
         self.webhook = webhook
         self.dry_run = dry_run
 
-    def send(self, content=None, embeds=None):
+    def send(self, content=None, embeds=None, ping_everyone=False):
         payload = {"username": "Figure Watch"}
+        if ping_everyone:
+            content = "@everyone " + (content or "")
+            payload["allowed_mentions"] = {"parse": ["everyone"]}
+        else:
+            payload["allowed_mentions"] = {"parse": []}
         if content:
             payload["content"] = content[:2000]
         if embeds:
@@ -636,6 +738,49 @@ LABELS = {
     "drop": "Price drop",
     "listed": "For sale now",
 }
+MAYBE_COLOUR = 0xF1C40F  # yellow side bar for "possible match"
+
+# A listing only counts as a possible match if its title has one of these,
+# so cards, books, CDs etc. for the same character are still ignored.
+DEFAULT_FIGURE_WORDS = [
+    "フィギュア", "ガレージキット", "ガレキ", "キット", "レジン", "完成品", "塗装済",
+    "スケール", "1/3", "1/4", "1/5", "1/6", "1/7", "1/8", "1/10", "1/12",
+    "ドール", "DD", "ドルフィー", "ボークス", "VOLKS", "ワンフェス", "WF", "トレフェス",
+    "ねんどろいど", "figma", "PVC", "バスト", "figure",
+]
+
+KIT_WORDS = ["ガレージキット", "ガレキ", "キット", "レジン", "未組立", "未塗装", "ワンフェス", "WF", "トレフェス"]
+TYPE_WORDS = {
+    "kit": KIT_WORDS,
+    "doll": ["DD", "MDD", "ドルフィー", "ボークス", "VOLKS", "ドール"],
+    "scale": ["フィギュア", "完成品", "塗装済", "スケール", "1/4", "1/5", "1/6", "1/7", "1/8", "PVC", "figure"],
+}
+
+# Other product lines - a "possible match" mentioning these is a different
+# figure of the same character, so it's ignored.
+OTHER_LINES = [
+    "ねんどろいど", "ねんどろ", "figma", "プライズ", "一番くじ", "ぬいぐるみ", "ぬい",
+    "ちびきゅん", "ぷちきゃら", "POP UP PARADE", "ポップアップパレード", "ちょこのせ",
+    "デフォルメ", "SPM", "Coreful", "ルミナスタ", "ガチャ", "カプセル", "食玩",
+    "ラバスト", "トレーディング", "ミニフィギュア", "BiCute", "ぬーどるストッパー",
+    "アクリル", "ジオラマ", "ぴたぬい",
+]
+
+# Figure makers - a "possible match" naming a maker that isn't this figure's
+# maker is a different figure, so it's ignored.
+KNOWN_MAKERS = [
+    "グッドスマイル", "グッスマ", "GSC", "マックスファクトリー", "アルター", "ALTER",
+    "コトブキヤ", "壽屋", "KOTOBUKIYA", "メガハウス", "バンダイ", "BANDAI", "フリュー",
+    "FuRyu", "セガ", "SEGA", "タイトー", "TAITO", "FREEing", "フリーイング",
+    "ネイティブ", "Native", "ミユキ", "BINDing", "バインディング", "ボークス", "VOLKS",
+    "ホビージャパン", "アクアマリン", "キューズQ", "オーキッドシード", "ダイキ工業",
+    "Pink Charm", "ピンクチャーム", "F.W.A.T", "FWAT", "Myethos", "ユニオンクリエイティブ",
+    "SkyTube", "スカイチューブ", "Lechery", "AniGame", "ムービック", "アニプレックス",
+    "ファニーナイツ", "ウイング", "WINGS", "あみあみ", "AMAKUNI", "プラム", "PLUM",
+    "ケイズファクトリー", "ベルファイン", "ヴェルテクス", "Vertex", "ensoutoys",
+    "ホットトイズ", "海洋堂", "エンブレイスジャパン", "オルカトイズ", "アオシマ",
+]
+
 # On the very first check, show at most this many current listings per site.
 MAX_FIRST_RUN_PER_SITE = 20
 
@@ -644,12 +789,16 @@ def build_embed(kind, item, site, old_price, rates):
     price_line = fmt_price(item["price"], rates)
     if kind == "drop":
         price_line = f"~~¥{old_price:,}~~ → {price_line}"
+    maybe = item.get("maybe")
+    description = f"**{price_line}**"
+    if maybe:
+        description = "⚠️ **Possible match** – right character, but check it's the exact figure\n" + description
     embed = {
-        "title": (item["title"] or "(no title)")[:250],
+        "title": (("⚠️ " if maybe else "") + (item["title"] or "(no title)"))[:250],
         "url": item["url"],
-        "description": f"**{price_line}**",
-        "color": SITE_COLOURS[site],
-        "footer": {"text": f"{SITE_NAMES[site]} · {LABELS[kind]}"},
+        "description": description,
+        "color": MAYBE_COLOUR if maybe else SITE_COLOURS[site],
+        "footer": {"text": f"{SITE_NAMES[site]} · {LABELS[kind]}" + (" · possible match" if maybe else "")},
     }
     if item.get("image"):
         embed["thumbnail"] = {"url": item["image"]}
@@ -669,11 +818,13 @@ def load_config():
     return cfg, figures
 
 
-def run(dry_run=False):
+def run(dry_run=False, show_all=False):
     cfg, figures = load_config()
     settings = cfg.get("settings") or {}
     default_sites = settings.get("sites") or list(SITE_NAMES)
     global_exclude = settings.get("exclude") or []
+    figure_words = settings.get("figure_words") or DEFAULT_FIGURE_WORDS
+    ping_mode = str(settings.get("ping_everyone", "exact")).lower()
     pause = float(settings.get("pause_seconds", 3))
 
     webhook = os.environ.get("DISCORD_WEBHOOK_URL")
@@ -696,6 +847,7 @@ def run(dry_run=False):
         name = fig["name"]
         sites = fig.get("sites") or default_sites
         fig_embeds = []
+        maybe_embeds = []
         first_embeds = []
         baseline_counts = []
 
@@ -741,27 +893,59 @@ def run(dry_run=False):
             if query == str(fig.get("jan")):
                 fig_for_match["must_include"] = []
                 fig_for_match["include_any"] = []
-            good = [i for i in found if matches(i, fig_for_match, global_exclude)]
-            log(f"{name} @ {SITE_NAMES[site]}: {len(found)} results, {len(good)} match")
+                # Rakuten's keyword search is loose even for barcodes, so
+                # there the listing must still name the character.
+                if site == "rakuten":
+                    key_words = fig.get("must_include") or (fig.get("search") or "").split()
+                    found = [
+                        i for i in found
+                        if any(normalise(w) in normalise(i["title"]) for w in key_words)
+                    ]
+            good = []
+            for i in found:
+                level = match_level(i, fig_for_match, global_exclude, figure_words)
+                if level:
+                    i["maybe"] = level == "maybe"
+                    good.append(i)
+            n_maybe = sum(1 for i in good if i["maybe"])
+            log(f"{name} @ {SITE_NAMES[site]}: {len(found)} results, "
+                f"{len(good) - n_maybe} match, {n_maybe} possible")
             for i in good:
                 price = f"¥{i['price']:,}" if i["price"] else "¥?"
-                log(f"    {price:>10}  {i['title'][:60]}  {i['url']}")
+                tag = "?" if i["maybe"] else " "
+                log(f"  {tag} {price:>10}  {i['title'][:60]}  {i['url']}")
             summary.append((name, site, len(found), len(good)))
 
-            alerts, baselining = diff_results(state, name, site, good, ts)
+            if show_all:
+                # Everything for sale now; the bot's memory is not touched.
+                alerts, baselining = [], True
+            else:
+                alerts, baselining = diff_results(state, name, site, good, ts)
             if baselining:
                 # First time for this figure+site: show everything already for
                 # sale (cheapest first), each with its own link.
-                listed = sorted(good, key=lambda i: i["price"] or 10**12)
+                listed = sorted(good, key=lambda i: (i["maybe"], i["price"] or 10**12))
                 baseline_counts.append(f"{SITE_NAMES[site]}: {len(good)}")
                 for item in listed[:MAX_FIRST_RUN_PER_SITE]:
                     first_embeds.append(build_embed("listed", item, site, None, rates))
                 if len(listed) > MAX_FIRST_RUN_PER_SITE:
                     baseline_counts[-1] += f" (showing cheapest {MAX_FIRST_RUN_PER_SITE})"
             for kind, item, old in alerts:
-                fig_embeds.append(build_embed(kind, item, site, old, rates))
+                embed = build_embed(kind, item, site, old, rates)
+                if item.get("maybe"):
+                    maybe_embeds.append((kind, embed))
+                else:
+                    fig_embeds.append((kind, embed))
 
-        if baseline_counts:
+        if baseline_counts and show_all:
+            discord.send(
+                f"👀🎀 **{name}** – everything for sale right now: "
+                + " · ".join(baseline_counts)
+                + ("" if first_embeds else "\nNothing for sale at the moment.")
+            )
+            for i in range(0, len(first_embeds), 10):
+                discord.send(embeds=first_embeds[i:i + 10])
+        elif baseline_counts:
             discord.send(
                 f"👀🎀 Now watching **{name}**. For sale right now: "
                 + " · ".join(baseline_counts)
@@ -769,11 +953,24 @@ def run(dry_run=False):
             )
             for i in range(0, len(first_embeds), 10):
                 discord.send(embeds=first_embeds[i:i + 10])
-        for i in range(0, len(fig_embeds), 10):
-            discord.send(content=f"👀🎀 **{name}**", embeds=fig_embeds[i:i + 10])
+        # Only brand-new listings ping @everyone; restocks and price drops
+        # are posted quietly.
+        groups = [
+            ([e for k, e in fig_embeds if k == "new"], f"👀🎀 **{name}**",
+             ping_mode in ("exact", "all")),
+            ([e for k, e in fig_embeds if k != "new"], f"👀🎀 **{name}**", False),
+            ([e for k, e in maybe_embeds if k == "new"],
+             f"👀🎀 **{name}** – ⚠️ possible match, please check", ping_mode == "all"),
+            ([e for k, e in maybe_embeds if k != "new"],
+             f"👀🎀 **{name}** – ⚠️ possible match, please check", False),
+        ]
+        for embeds, content, ping in groups:
+            for i in range(0, len(embeds), 10):
+                discord.send(content=content, embeds=embeds[i:i + 10],
+                             ping_everyone=ping and i == 0)
 
     # Failure tracking: warn once if a site keeps failing.
-    for site in SITE_NAMES:
+    for site in ([] if show_all else SITE_NAMES):
         if site in failed_sites:
             count = state["failures"].get(site, 0) + 1
             state["failures"][site] = count
@@ -787,7 +984,9 @@ def run(dry_run=False):
                 discord.send(f"✅ {SITE_NAMES[site]} is working again.")
             del state["failures"][site]
 
-    if not dry_run:
+    if show_all and failed_sites:
+        discord.send("ℹ️ Couldn't check: " + ", ".join(SITE_NAMES[s] for s in failed_sites))
+    if not dry_run and not show_all:
         save_state(state)
     log(f"Done. {len(summary)} searches, {len(failed_sites)} site(s) failed.")
 
@@ -796,7 +995,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--test-discord", action="store_true")
-    p.add_argument("--mode", choices=["normal", "dry-run", "test-discord"], default=None)
+    p.add_argument("--mode", choices=["normal", "show-all", "dry-run", "test-discord"], default=None)
     args = p.parse_args()
     mode = args.mode or ("test-discord" if args.test_discord else "dry-run" if args.dry_run else "normal")
 
@@ -809,7 +1008,7 @@ def main():
         )
         log("Test message sent.")
         return
-    run(dry_run=(mode == "dry-run"))
+    run(dry_run=(mode == "dry-run"), show_all=(mode == "show-all"))
 
 
 if __name__ == "__main__":
