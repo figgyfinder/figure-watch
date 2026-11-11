@@ -1,0 +1,202 @@
+# ─────────────────────────────────────────────────────────────
+#  YOUR WATCHLIST
+#  Edit this file on GitHub (pencil icon) to add/remove figures.
+#  Indentation matters: keep the spaces lined up like the examples.
+# ─────────────────────────────────────────────────────────────
+#
+#  For each figure:
+#    name:          what you call it (shown in Discord)
+#    search:        words to search for (Japanese works best)
+#    jan:           (optional) box barcode – very accurate on AmiAmi and Rakuten
+#    max_price:     (optional) in yen – anything above is ignored
+#    must_include:  (optional) words the listing title MUST all contain.
+#                   If left out, every word of `search` must be in the title.
+#    include_any:   (optional) title must contain AT LEAST ONE of these.
+#                   Several groups [[..],[..]] = one word from EACH group.
+#    character:     (optional) words that identify the character, for
+#                   "possible match" alerts (defaults to must_include)
+#    type:          kit / doll / scale - what kind of item it is
+#    scale:         e.g. "1/7" - listings saying a different scale are ignored
+#    maker:         the maker/circle - listings naming another maker are ignored
+#    exclude:       (optional) words that rule a listing out
+#
+#  Exact matches alert normally. Listings with the right character that
+#  look like a figure, but don't confirm the maker/version, still alert
+#  with a yellow ⚠️ "possible match" warning so nothing gets missed.
+#    sites:         (optional) only check these: mercari, yahoo, yahooflea,
+#                   rakuma, rakuten, surugaya, mandarake, amiami
+#
+#  Tip: add  max_price: 30000  (for example) under any figure to cap the price.
+
+figures:
+
+  # ── Umineko garage kits ────────────────────────────────────
+
+  - name: "Eva Beatrice garage kit (Otona no Bijutsushitsu)"   # MFC 288698
+    search: "うみねこ ベアトリーチェ"
+    type: kit
+    maker: ["大人の美術室"]
+    must_include: ["ベアトリーチェ"]
+    include_any: [["ヱヴァ", "エヴァ", "EVA", "大人の美術室"], ["ガレージキット", "ガレキ", "キット", "レジン", "ワンフェス", "WF", "未組立", "未塗装"]]
+
+  - name: "Lambdadelta garage kit (Model Passiona)"            # MFC 275638
+    search: "ラムダデルタ"
+    type: kit
+    maker: ["パッショナ", "Passiona"]
+    include_any: [["パッショナ", "Passiona"], ["ガレージキット", "ガレキ", "キット", "レジン", "ワンフェス", "WF", "未組立", "未塗装"]]
+
+  - name: "Bernkastel 1/6 kits (Otona no Bijutsushitsu)"       # MFC 288700 + 288702
+    search: "ベルンカステル"
+    type: kit
+    scale: "1/6"
+    maker: ["大人の美術室"]
+    include_any: [["1/6", "大人の美術室"], ["ガレージキット", "ガレキ", "キット", "レジン", "ワンフェス", "WF", "未組立", "未塗装"]]
+
+  # ── Dollfie Dreams (Volks) ─────────────────────────────────
+
+  - name: "Beatrice Dollfie Dream (Volks)"                     # MFC 62293
+    search: "ベアトリーチェ ドルフィー"
+    type: doll
+    maker: ["ボークス", "VOLKS"]
+    jan: "4518992385389"
+    must_include: ["ベアトリーチェ"]
+    include_any: ["DD", "ドルフィー", "ボークス", "VOLKS"]
+    exclude: ["衣装のみ", "ウィッグのみ"]
+
+  - name: "Maria & Sakutarou Mini Dollfie Dream (Volks)"       # MFC 32588
+    search: "うみねこ マリア"
+    type: doll
+    maker: ["ボークス", "VOLKS"]
+    character: [["マリア", "真里亞", "さくたろ"]]
+    must_include: []
+    include_any: [["マリア", "真里亞", "さくたろ"], ["MDD", "DD", "ドルフィー", "ボークス", "VOLKS"]]
+    exclude: ["衣装のみ", "ウィッグのみ"]
+
+  - name: "Kusugawa Sasara Dollfie Dream (Volks)"              # MFC 13535
+    search: "久寿川ささら"
+    type: doll
+    maker: ["ボークス", "VOLKS"]
+    jan: "4518992378565"
+    must_include: ["ささら"]
+    include_any: ["DD", "ドルフィー", "ボークス", "VOLKS"]
+    exclude: ["衣装のみ", "ウィッグのみ"]
+
+  # ── Sayonara o Oshiete ────────────────────────────────────
+
+  - name: "Sugamo Mutsuki 1/7 (Native)"                        # MFC 331664
+    search: "さよならを教えて 睦月"
+    type: scale
+    scale: "1/7"
+    maker: ["ネイティブ", "Native"]
+    character: [["睦月"], ["さよならを教えて", "さよ教", "巣鴨"]]
+    must_include: ["睦月"]
+    include_any: [["さよならを教えて", "さよ教", "巣鴨"], ["ネイティブ", "Native", "1/7"]]
+
+  - name: "Hitomi Hirosuke bust kit (-MU-U-MA-)"               # MFC 2922471
+    search: "さよならを教えて 人見"
+    type: kit
+    character: [["さよならを教えて", "さよ教"]]
+    must_include: ["人見"]
+    include_any: [["さよならを教えて", "さよ教"], ["ガレージキット", "ガレキ", "キット", "レジン", "ワンフェス", "WF", "トレフェス", "未組立", "バスト"]]
+
+  # ── Scale figures ─────────────────────────────────────────
+
+  - name: "Yukizuki Sumino 1/8 – Snow (Kotobukiya)"            # MFC 3910
+    search: "雪月澄乃"
+    type: scale
+    scale: "1/8"
+    maker: ["コトブキヤ", "壽屋", "KOTOBUKIYA"]
+    jan: "4934054777341"
+    must_include: ["澄乃"]
+    include_any: ["コトブキヤ", "壽屋", "KOTOBUKIYA", "1/8"]
+
+  - name: "Kneesocks Daemon 1/8 (Alter)"                       # MFC 91353
+    search: "ニーソックス アルター"
+    type: scale
+    scale: "1/8"
+    maker: ["アルター", "ALTER"]
+    jan: "4560228203028"
+    must_include: ["ニーソックス"]
+    include_any: ["アルター", "ALTER"]
+
+  - name: "Scanty Daemon 1/8 (Alter)"                          # MFC 109880
+    search: "スキャンティ アルター"
+    type: scale
+    scale: "1/8"
+    maker: ["アルター", "ALTER"]
+    jan: "4560228203165"
+    must_include: ["スキャンティ"]
+    include_any: ["アルター", "ALTER"]
+
+  - name: "Oshino Shinobu Maidmade 1/7 (Miyuki)"               # MFC 1618604
+    search: "忍野忍 メイド"
+    type: scale
+    scale: "1/7"
+    maker: ["ミユキ", "Miyuki"]
+    character: [["忍野", "しのぶ", "シノブ"], ["メイド"]]
+    jan: "4560369061273"
+    must_include: ["メイド"]
+    include_any: [["忍野", "しのぶ", "シノブ"], ["1/7", "Maidmade", "メイドメイド", "ミユキ", "Miyuki"]]
+
+  - name: "Riina & Saaya 1/6 (F.W.A.T)"                        # MFC 945095
+    search: "りぃな さぁや"
+    type: scale
+    scale: "1/6"
+    maker: ["F.W.A.T", "FWAT"]
+    jan: "4573526990026"
+    include_any: ["F.W.A.T", "FWAT", "1/6"]
+
+  - name: "Minaduki Shigure – Character's Selection (BINDing)" # MFC 2606753
+    search: "ネコぱら 時雨"
+    type: scale
+    maker: ["BINDing", "バインディング", "ネイティブ", "Native"]
+    character: [["時雨"], ["ネコぱら", "水無月"]]
+    must_include: ["時雨"]
+    include_any: ["BINDing", "バインディング", "キャラクターズセレクション", "Character's Selection"]
+
+  - name: "Neko Cafe♡Pantsu (Pink Charm × Henreader)"         # MFC 1471268
+    search: "へんりいだ"
+    type: scale
+    maker: ["Pink Charm", "ピンクチャーム"]
+    character: [["へんりいだ", "henreader"]]
+    jan: "4582533310086"
+    must_include: []
+    include_any: [["へんりいだ", "henreader"], ["猫", "ネコ", "ねこ", "neko"], ["カフェ", "cafe"], ["フィギュア", "Pink Charm", "ピンクチャーム", "PinkCharm"]]
+
+  # ── Blue Archive garage kit ───────────────────────────────
+
+  - name: "Shimoe Koharu Gyaru ver. garage kit (Momo+)"       # MFC 2255097
+    search: "コハル ギャル"
+    type: kit
+    maker: ["Momo"]
+    character: [["コハル"]]
+    must_include: ["コハル"]
+    include_any: [["ギャル"], ["ガレージキット", "ガレキ", "キット", "レジン", "ワンフェス", "WF", "未組立", "未塗装", "Momo"]]
+
+settings:
+  # Which sites to check when a figure doesn't list its own.
+  # Rakuten is skipped automatically until you add its keys (see README).
+  # (Suruga-ya is left out: it blocks GitHub's servers.)
+  sites: [mercari, yahoo, yahooflea, rakuma, rakuten, mandarake, amiami]
+
+  # Words that rule out a listing for EVERY figure (box only / empty box).
+  # (merch that isn't a figure: posters, CDs, books, cards, keyrings...)
+  exclude: ["箱のみ", "空箱", "外箱のみ",
+            "ポスター", "タペストリー", "ドラマCD", "CD", "DVD", "Blu-ray", "サントラ",
+            "漫画", "コミック", "小説", "文庫", "画集", "設定資料", "ムック",
+            "トレカ", "シングルカード", "遊戯王", "ポケカ", "テレカ", "テレホンカード", "色紙", "下敷き",
+            "クリアファイル", "缶バッジ", "アクスタ", "アクリルスタンド", "アクリルキーホルダー",
+            "キーホルダー", "ストラップ", "ラバー", "抱き枕", "マウスパッド", "Tシャツ"]
+
+  # @everyone ping for NEWLY LISTED items (restocks / price drops never ping):
+  #   exact = only exact matches
+  #   all   = exact matches and ⚠️ possible matches
+  #   none  = never ping @everyone
+  ping_everyone: exact
+
+  # Approximate prices shown next to the yen price (today's exchange rate).
+  # Options include GBP, USD, CAD, EUR, AUD. Use [] for yen only.
+  currencies: [GBP, USD, CAD]
+
+  # Seconds to wait between requests (be polite to the sites).
+  pause_seconds: 2
