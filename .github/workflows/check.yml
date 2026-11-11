@@ -12,6 +12,7 @@ on:
         default: normal
         options:
           - normal
+          - show-all
           - test-discord
           - dry-run
 
