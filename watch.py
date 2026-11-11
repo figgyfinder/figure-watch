@@ -67,6 +67,10 @@ SITE_COLOURS = {
 REAPPEAR_AFTER_SECS = 6 * 3600
 # Forget items not seen for this long (keeps the state file small).
 FORGET_AFTER_SECS = 30 * 24 * 3600
+# Wait this long before retrying a failed search, and give up on a site for
+# the rest of the run after this many failed searches.
+RETRY_WAIT = 15
+GIVE_UP_AFTER = 3
 # Warn on Discord after a site has failed this many runs in a row (~3 hours).
 FAILURE_WARN_AFTER = 6
 
@@ -792,7 +796,7 @@ def build_embed(kind, item, site, old_price, rates):
     maybe = item.get("maybe")
     description = f"**{price_line}**"
     if maybe:
-        description = "⚠️ **Possible match** – right character, but check it's the exact figure\n" + description
+        description = "⚠️ **Warning: this may be inaccurate**\n" + description
     embed = {
         "title": (("⚠️ " if maybe else "") + (item["title"] or "(no title)"))[:250],
         "url": item["url"],
@@ -840,8 +844,29 @@ def run(dry_run=False, show_all=False):
     ts = now_ts()
     session = requests.Session()
     mercari = Mercari()
-    failed_sites = {}
+    failed_sites = {}   # site -> last error message
+    site_errors = {}    # site -> number of failed searches this run
+    site_ok = set()     # sites that answered at least once this run
+    given_up = set()
     summary = []
+    fig = {}
+
+    def search_site(site, query):
+        if site == "mercari":
+            return mercari.search(session, query)
+        if site == "yahoo":
+            return search_yahoo(session, query)
+        if site == "surugaya":
+            return search_surugaya(session, query)
+        if site == "yahooflea":
+            return search_yahoo_flea(session, query)
+        if site == "rakuma":
+            return search_rakuma(session, query)
+        if site == "amiami":
+            return search_amiami(session, query)
+        if site == "mandarake":
+            return search_mandarake(session, query)
+        return search_rakuten(session, query, fig.get("max_price"))
 
     for fig in figures:
         name = fig["name"]
@@ -855,37 +880,33 @@ def run(dry_run=False, show_all=False):
             if site not in SITE_NAMES:
                 log(f"Unknown site '{site}' for {name} - skipping")
                 continue
-            if site in failed_sites:
-                continue  # don't keep hammering a site that's blocking us
+            if site in given_up:
+                continue  # don't keep hammering a site that keeps refusing
             # JAN barcodes work well on shops; marketplaces need words.
             query = fig.get("search")
-            if fig.get("jan") and (site in ("surugaya", "rakuten", "amiami") or not query):
+            if fig.get("jan") and (site in ("surugaya", "rakuten") or not query):
                 query = str(fig["jan"])
-            try:
-                if site == "mercari":
-                    found = mercari.search(session, query)
-                elif site == "yahoo":
-                    found = search_yahoo(session, query)
-                elif site == "surugaya":
-                    found = search_surugaya(session, query)
-                elif site == "yahooflea":
-                    found = search_yahoo_flea(session, query)
-                elif site == "rakuma":
-                    found = search_rakuma(session, query)
-                elif site == "amiami":
-                    found = search_amiami(session, query)
-                elif site == "mandarake":
-                    found = search_mandarake(session, query)
-                else:
-                    found = search_rakuten(session, query, fig.get("max_price"))
-                    if found is None:
-                        continue
-            except Exception as e:  # noqa: BLE001 - one bad site shouldn't stop the rest
-                failed_sites[site] = f"{type(e).__name__}: {e}"
-                log(f"  ! {SITE_NAMES[site]} failed: {failed_sites[site]}")
+            found, error = None, None
+            for attempt in range(2):  # one retry after a short wait
+                try:
+                    found = search_site(site, query)
+                    error = None
+                    break
+                except Exception as e:  # noqa: BLE001 - one bad site shouldn't stop the rest
+                    error = f"{type(e).__name__}: {e}"
+                    log(f"  ! {SITE_NAMES[site]} failed ({name}, try {attempt + 1}): {error[:300]}")
+                    time.sleep(RETRY_WAIT)
+            time.sleep(pause)
+            if error:
+                failed_sites[site] = error
+                site_errors[site] = site_errors.get(site, 0) + 1
+                if site_errors[site] >= GIVE_UP_AFTER:
+                    given_up.add(site)
+                    log(f"  ! Giving up on {SITE_NAMES[site]} for this run.")
                 continue
-            finally:
-                time.sleep(pause)
+            site_ok.add(site)
+            if found is None:
+                continue  # Rakuten without keys
 
             # When searching by JAN the title won't contain the words, so
             # only apply price / exclude filters in that case.
@@ -971,7 +992,7 @@ def run(dry_run=False, show_all=False):
 
     # Failure tracking: warn once if a site keeps failing.
     for site in ([] if show_all else SITE_NAMES):
-        if site in failed_sites:
+        if site in failed_sites and site not in site_ok:
             count = state["failures"].get(site, 0) + 1
             state["failures"][site] = count
             if count == FAILURE_WARN_AFTER:
@@ -985,7 +1006,8 @@ def run(dry_run=False, show_all=False):
             del state["failures"][site]
 
     if show_all and failed_sites:
-        discord.send("ℹ️ Couldn't check: " + ", ".join(SITE_NAMES[s] for s in failed_sites))
+        discord.send("ℹ️ Some searches failed on: " + ", ".join(SITE_NAMES[s] for s in failed_sites)
+                     + "\n" + "\n".join(f"• {SITE_NAMES[s]}: `{e[:150]}`" for s, e in failed_sites.items()))
     if not dry_run and not show_all:
         save_state(state)
     log(f"Done. {len(summary)} searches, {len(failed_sites)} site(s) failed.")
