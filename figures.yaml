@@ -7,7 +7,7 @@
 #  For each figure:
 #    name:          what you call it (shown in Discord)
 #    search:        words to search for (Japanese works best)
-#    jan:           (optional) box barcode – very accurate on Rakuten
+#    jan:           (optional) box barcode – very accurate on Suruga-ya and Rakuten
 #    max_price:     (optional) in yen – anything above is ignored
 #    must_include:  (optional) words the listing title MUST all contain.
 #                   If left out, every word of `search` must be in the title.
@@ -179,11 +179,25 @@ figures:
     must_include: ["コハル"]
     include_any: [["ギャル"], ["ガレージキット", "ガレキ", "キット", "レジン", "ワンフェス", "WF", "未組立", "未塗装", "Momo"]]
 
+  # ── Shizuku (Leaf) garage kits ────────────────────────────
+
+  - name: "Tsukishima Ruriko garage kits (T's System / Corsair)"  # MFC: T's System kit + Corsair MS-DOS ver.
+    # Two searches: sellers write 月島瑠璃子 or just 雫 + 瑠璃子
+    search: ["月島瑠璃子", "雫 瑠璃子"]
+    type: kit
+    maker: ["T's System", "ティーズシステム", "Corsair", "コルセア"]
+    character: [["瑠璃子", "ルリコ"], ["月島", "雫", "Leaf", "リーフ", "シズク"]]
+    must_include: []
+    include_any: [["瑠璃子", "ルリコ"], ["T's System", "ティーズシステム", "Corsair", "コルセア"], ["ガレージキット", "ガレキ", "キット", "レジン", "ワンフェス", "WF", "ワンダーフェスティバル", "ホビーフェスティバル", "未組立", "未塗装"]]
+
 settings:
   # Which sites to check when a figure doesn't list its own.
   # Rakuten is skipped automatically until you add its keys (see README).
-  # (Suruga-ya is left out: it blocks GitHub's servers.)
-  sites: [mercari, yahoo, yahooflea, rakuma, rakuten, mandarake, amiami]
+  sites: [mercari, yahoo, yahooflea, rakuma, rakuten, mandarake, amiami, surugaya]
+
+  # These block GitHub's servers, so they're checked by the home checker on
+  # your PC instead (see HOME-SETUP.txt). GitHub skips them.
+  home_sites: [amiami, surugaya]
 
   # Words that rule out a listing for EVERY figure (box only / empty box).
   # (merch that isn't a figure: posters, CDs, books, cards, keyrings...)

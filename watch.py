@@ -31,6 +31,12 @@ ROOT = Path(__file__).resolve().parent
 CONFIG_FILE = ROOT / "figures.yaml"
 STATE_FILE = ROOT / "state" / "seen.json"
 
+# Home mode: runs on your own PC for sites that block GitHub's servers.
+HOME_MODE = False
+HOME_CONFIG = ROOT / "home_config.txt"
+HOME_LOG = ROOT / "home_log.txt"
+DEFAULT_HOME_SITES = ["amiami", "surugaya"]
+
 BROWSER_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
@@ -78,7 +84,34 @@ PRICE_RE = re.compile(r"[￥¥]\s*([\d,]+)|([\d,]+)\s*円")
 
 
 def log(msg):
-    print(msg, flush=True)
+    try:
+        print(msg, flush=True)
+    except Exception:  # no console when run in the background on Windows
+        pass
+    if HOME_MODE:
+        try:
+            with open(HOME_LOG, "a", encoding="utf-8") as f:
+                f.write(time.strftime("%Y-%m-%d %H:%M ") + str(msg) + "\n")
+        except OSError:
+            pass
+
+
+def start_home_mode():
+    """Read home_config.txt (KEY=value lines) and keep the log file small."""
+    global HOME_MODE, STATE_FILE
+    HOME_MODE = True
+    STATE_FILE = ROOT / "home_seen.json"
+    if HOME_CONFIG.exists():
+        for line in HOME_CONFIG.read_text(encoding="utf-8-sig").splitlines():
+            if "=" in line and not line.strip().startswith("#"):
+                k, v = line.split("=", 1)
+                os.environ.setdefault(k.strip(), v.strip())
+    try:
+        if HOME_LOG.exists() and HOME_LOG.stat().st_size > 500_000:
+            lines = HOME_LOG.read_text(encoding="utf-8").splitlines()[-2000:]
+            HOME_LOG.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except OSError:
+        pass
 
 
 def now_ts():
@@ -189,13 +222,22 @@ class SiteBlocked(Exception):
 def search_yahoo(session, query, kind=None):
     """Yahoo Auctions, read through Buyee (Yahoo's own search page doesn't
     give the bot readable results). Falls back to Yahoo directly."""
-    try:
-        return search_yahoo_via_buyee(session, query, kind)
-    except SiteBlocked:
-        raise
-    except Exception as e:  # noqa: BLE001
-        log(f"  (Buyee didn't work for Yahoo: {e}; trying Yahoo directly)")
-        return search_yahoo_direct(session, query, kind)
+    if not _BUYEE_BLOCKED:
+        try:
+            return search_yahoo_via_buyee(session, query, kind)
+        except Exception as e:  # noqa: BLE001
+            log(f"  (Buyee didn't work for Yahoo: {e}; using Yahoo directly)")
+            if isinstance(e, SiteBlocked):
+                _BUYEE_BLOCKED.append(True)  # don't keep trying Buyee this run
+    items = search_yahoo_direct(session, query, kind)
+    for i in items:  # Yahoo blocks the UK, so link to the Buyee page instead
+        i["url"] = f"https://buyee.jp/item/jdirectitems/auction/{i['id']}"
+    return items
+
+
+_BUYEE_BLOCKED = []
+# Notes about pages the bot couldn't read, posted after a show-all run.
+DIAGNOSTICS = {}
 
 
 def search_yahoo_via_buyee(session, query, kind=None):
@@ -251,7 +293,46 @@ def search_yahoo_direct(session, query, kind=None):
     if "Notice__wandText" in resp.text or "に一致する商品はありません" in resp.text:
         return []
     pattern = re.compile(r"auctions\.yahoo\.co\.jp/jp/auction/([A-Za-z]?\d{6,})")
-    return extract_items(resp.text, url, pattern)
+    items = extract_items(resp.text, url, pattern)
+    if not items:
+        items = _yahoo_items_from_json(resp.text)
+    if not items and "Yahoo" not in DIAGNOSTICS:
+        html = resp.text
+        title = re.search(r"<title>(.*?)</title>", html, re.S)
+        first = html.find("auction")
+        DIAGNOSTICS["Yahoo"] = (
+            f"HTTP {resp.status_code}, final URL {resp.url[:120]}, page title "
+            f"'{(title.group(1).strip() if title else '?')[:80]}', {len(html)} chars, "
+            f"'/jp/auction/' x{html.count('/jp/auction/')}, 'auctionId' x{html.count('auctionId')}, "
+            f"__NEXT_DATA__ {'yes' if '__NEXT_DATA__' in html else 'no'}, "
+            f"near 'auction': {html[max(0, first - 80):first + 160]!r}"[:900]
+        )
+    return items
+
+
+def _yahoo_items_from_json(html):
+    """Newer Yahoo pages may only carry results as JSON data."""
+    out, seen = [], set()
+    for m in re.finditer(r'"(?:auctionId|aid|id)"\s*:\s*"([a-z]\d{8,11})"', html):
+        iid = m.group(1)
+        if iid in seen:
+            continue
+        seen.add(iid)
+        chunk = html[m.start(): m.start() + 1500]
+        t = re.search(r'"(?:title|name)"\s*:\s*"((?:[^"\\]|\\.)+)"', chunk)
+        p = re.search(r'"(?:price|currentPrice|bidPrice)"\s*:\s*"?(\d+)', chunk)
+        img = re.search(r'"(?:image|imageUrl|thumbnail|img)"\s*:\s*"(https?:[^"]+)"', chunk)
+        title = t.group(1) if t else ""
+        try:
+            title = json.loads(f'"{title}"')
+        except ValueError:
+            pass
+        out.append({
+            "id": iid, "title": title, "price": int(p.group(1)) if p else None,
+            "url": f"https://auctions.yahoo.co.jp/jp/auction/{iid}",
+            "image": img.group(1).replace("\\/", "/") if img else None, "text": title,
+        })
+    return out
 
 
 def search_surugaya(session, query):
@@ -970,9 +1051,30 @@ def build_embed(kind, item, site, old_price, rates):
 # ---------------------------------------------------------------------------
 
 def load_config():
-    cfg = yaml.safe_load(CONFIG_FILE.read_text(encoding="utf-8")) or {}
+    text = None
+    if HOME_MODE:
+        # Use the watchlist from GitHub, so editing it there updates both bots.
+        url = os.environ.get("FIGURES_URL")
+        if url:
+            try:
+                r = requests.get(url + ("&" if "?" in url else "?") + f"t={now_ts()}", timeout=20)
+                r.raise_for_status()
+                text = r.text
+                (ROOT / "figures_from_github.yaml").write_text(text, encoding="utf-8")
+            except Exception as e:  # noqa: BLE001
+                log(f"Couldn't download the watchlist from GitHub ({e}); using the last copy.")
+                cached = ROOT / "figures_from_github.yaml"
+                if cached.exists():
+                    text = cached.read_text(encoding="utf-8")
+    if text is None:
+        text = CONFIG_FILE.read_text(encoding="utf-8")
+    cfg = yaml.safe_load(text) or {}
     figures = cfg.get("figures") or []
     for f in figures:
+        # `search` can be one search or a list of searches.
+        if isinstance(f.get("search"), list):
+            f["searches"] = [str(q) for q in f["search"]]
+            f["search"] = " ".join(f["searches"])
         if not f.get("name") or not (f.get("search") or f.get("jan")):
             raise SystemExit(f"Each figure needs a name and a search (or jan): {f}")
     return cfg, figures
@@ -982,6 +1084,9 @@ def run(dry_run=False, show_all=False):
     cfg, figures = load_config()
     settings = cfg.get("settings") or {}
     default_sites = settings.get("sites") or list(SITE_NAMES)
+    home_sites = settings.get("home_sites", DEFAULT_HOME_SITES)
+    if HOME_MODE:
+        default_sites = list(home_sites)
     global_exclude = settings.get("exclude") or []
     figure_words = settings.get("figure_words") or DEFAULT_FIGURE_WORDS
     ping_mode = str(settings.get("ping_everyone", "exact")).lower()
@@ -1028,6 +1133,8 @@ def run(dry_run=False, show_all=False):
     for fig in figures:
         name = fig["name"]
         sites = fig.get("sites") or default_sites
+        # Sites in home_sites are checked from your PC, the rest from GitHub.
+        sites = [x for x in sites if (x in home_sites) == HOME_MODE]
         fig_embeds = []
         maybe_embeds = []
         first_embeds = []
@@ -1040,20 +1147,29 @@ def run(dry_run=False, show_all=False):
             if site in given_up:
                 continue  # don't keep hammering a site that keeps refusing
             # JAN barcodes work well on shops; marketplaces need words.
-            query = fig.get("search")
-            if fig.get("jan") and (site in ("surugaya", "rakuten") or not query):
-                query = str(fig["jan"])
+            queries = fig.get("searches") or [fig.get("search")]
+            if fig.get("jan") and (site in ("surugaya", "rakuten") or not queries[0]):
+                queries = [str(fig["jan"])]
+            query = queries[0]
             found, error = None, None
-            for attempt in range(2):  # one retry after a short wait
-                try:
-                    found = search_site(site, query)
-                    error = None
+            for q in queries:
+                for attempt in range(2):  # one retry after a short wait
+                    try:
+                        result = search_site(site, q)
+                        error = None
+                        if result is not None:
+                            # merge results of several searches, no repeats
+                            found = found or []
+                            have = {i["id"] for i in found}
+                            found += [i for i in result if i["id"] not in have]
+                        break
+                    except Exception as e:  # noqa: BLE001 - one bad site shouldn't stop the rest
+                        error = f"{type(e).__name__}: {e}"
+                        log(f"  ! {SITE_NAMES[site]} failed ({name}, try {attempt + 1}): {error[:300]}")
+                        time.sleep(RETRY_WAIT)
+                time.sleep(pause)
+                if error:
                     break
-                except Exception as e:  # noqa: BLE001 - one bad site shouldn't stop the rest
-                    error = f"{type(e).__name__}: {e}"
-                    log(f"  ! {SITE_NAMES[site]} failed ({name}, try {attempt + 1}): {error[:300]}")
-                    time.sleep(RETRY_WAIT)
-            time.sleep(pause)
             if error:
                 failed_sites[site] = error
                 site_errors[site] = site_errors.get(site, 0) + 1
@@ -1154,7 +1270,8 @@ def run(dry_run=False, show_all=False):
             state["failures"][site] = count
             if count == FAILURE_WARN_AFTER:
                 discord.send(
-                    f"⚠️ {SITE_NAMES[site]} has failed {count} checks in a row. "
+                    f"⚠️ {SITE_NAMES[site]} has failed {count} checks in a row"
+                    + (" (home checker)" if HOME_MODE else "") + ". "
                     f"Last error: `{failed_sites[site][:300]}`"
                 )
         elif site in state["failures"]:
@@ -1162,6 +1279,9 @@ def run(dry_run=False, show_all=False):
                 discord.send(f"✅ {SITE_NAMES[site]} is working again.")
             del state["failures"][site]
 
+    if show_all and DIAGNOSTICS:
+        discord.send("🔧 For Claude, couldn't read these pages:\n" + "\n".join(
+            f"• {k}: `{v}`" for k, v in DIAGNOSTICS.items()))
     if show_all and failed_sites:
         discord.send("ℹ️ Some searches failed on: " + ", ".join(SITE_NAMES[s] for s in failed_sites)
                      + "\n" + "\n".join(f"• {SITE_NAMES[s]}: `{e[:150]}`" for s, e in failed_sites.items()))
@@ -1175,7 +1295,10 @@ def main():
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--test-discord", action="store_true")
     p.add_argument("--mode", choices=["normal", "show-all", "dry-run", "test-discord"], default=None)
+    p.add_argument("--home", action="store_true", help="check the sites that block GitHub, from this PC")
     args = p.parse_args()
+    if args.home:
+        start_home_mode()
     mode = args.mode or ("test-discord" if args.test_discord else "dry-run" if args.dry_run else "normal")
 
     if mode == "test-discord":
@@ -1183,6 +1306,8 @@ def main():
         if not webhook:
             raise SystemExit("DISCORD_WEBHOOK_URL is not set.")
         Discord(webhook).send(
+            "✅ Figure Watch **home checker** is connected (AmiAmi & Suruga-ya from your PC)."
+            if HOME_MODE else
             "✅ Figure Watch is connected. Alerts for your figures will show up here."
         )
         log("Test message sent.")
