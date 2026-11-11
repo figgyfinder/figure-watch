@@ -7,12 +7,13 @@
 #  For each figure:
 #    name:          what you call it (shown in Discord)
 #    search:        words to search for (Japanese works best)
-#    jan:           (optional) box barcode – very accurate on Suruga-ya / Rakuten
+#    jan:           (optional) box barcode – very accurate on Suruga-ya, AmiAmi, Rakuten
 #    max_price:     (optional) in yen – anything above is ignored
 #    must_include:  (optional) words the listing title MUST all contain
 #    include_any:   (optional) title must contain AT LEAST ONE of these
 #    exclude:       (optional) words that rule a listing out
-#    sites:         (optional) only check these: mercari, yahoo, surugaya, rakuten
+#    sites:         (optional) only check these: mercari, yahoo, yahooflea,
+#                   rakuma, rakuten, surugaya, mandarake, amiami
 #
 #  Tip: add  max_price: 30000  (for example) under any figure to cap the price.
 
@@ -84,17 +85,34 @@ figures:
     search: "ネコぱら 時雨"
     include_any: ["BINDing", "バインディング", "キャラクターズセレクション", "ネイティブ", "Native"]
 
+  - name: "Shimoe Koharu Gyaru ver. garage kit (Momo+)"       # MFC 2255097
+    search: "コハル ギャル"
+    include_any: ["ガレージキット", "ガレキ", "キット", "レジン", "ワンフェス", "WF", "未組立", "Momo"]
+
+  - name: "Kusugawa Sasara Dollfie Dream (Volks)"              # MFC 13535
+    search: "久寿川ささら"
+    jan: "4518992378565"
+    include_any: ["DD", "ドルフィー", "ボークス", "VOLKS", "ドール"]
+    exclude: ["衣装のみ", "ウィッグのみ"]
+
+  - name: "Neko Cafe♡Pantsu (Pink Charm × Henreader)"         # MFC 1471268
+    search: "へんりいだ"
+    jan: "4582533310086"
+    include_any: ["猫", "ネコ", "ねこ", "neko", "カフェ"]
+    exclude: ["タペストリー", "アクリル", "同人誌", "イラスト集", "画集", "ポスター", "缶バッジ", "抱き枕"]
+
 
 settings:
   # Which sites to check when a figure doesn't list its own.
   # Rakuten is skipped automatically until you add its keys (see README).
-  sites: [mercari, yahoo, surugaya, rakuten]
+  sites: [mercari, yahoo, yahooflea, rakuma, rakuten, surugaya, mandarake, amiami]
 
   # Words that rule out a listing for EVERY figure (box only / empty box).
   exclude: ["箱のみ", "空箱", "外箱のみ"]
 
-  # Show an approximate £ price next to the yen price.
-  show_gbp: true
+  # Approximate prices shown next to the yen price (today's exchange rate).
+  # Options include GBP, USD, CAD, EUR, AUD. Use [] for yen only.
+  currencies: [GBP, USD, CAD]
 
   # Seconds to wait between requests (be polite to the sites).
-  pause_seconds: 3
+  pause_seconds: 2

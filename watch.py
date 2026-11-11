@@ -2,7 +2,8 @@
 Figure Watch - checks Japanese shops and marketplaces for the figures listed
 in figures.yaml and posts new listings / restocks / price drops to Discord.
 
-Sites: Mercari JP, Yahoo Auctions, Suruga-ya, Rakuten Ichiba (optional).
+Sites: Mercari JP, Yahoo Auctions, Suruga-ya, AmiAmi, Mandarake,
+Rakuten Ichiba (optional).
 
 Run modes:
     python watch.py                 normal check (sends alerts, saves state)
@@ -43,13 +44,21 @@ HEADERS = {
 SITE_NAMES = {
     "mercari": "Mercari",
     "yahoo": "Yahoo Auctions",
+    "yahooflea": "Yahoo Flea Market",
+    "rakuma": "Rakuma",
     "surugaya": "Suruga-ya",
+    "amiami": "AmiAmi",
+    "mandarake": "Mandarake",
     "rakuten": "Rakuten",
 }
 SITE_COLOURS = {
     "mercari": 0xFF0211,
     "yahoo": 0x7B0099,
+    "yahooflea": 0xFF0033,
+    "rakuma": 0xE6006F,
     "surugaya": 0x0066CC,
+    "amiami": 0xF39800,
+    "mandarake": 0x2E7D32,
     "rakuten": 0xBF0000,
 }
 
@@ -308,6 +317,122 @@ class Mercari:
         return out
 
 
+def search_amiami(session, query):
+    """AmiAmi's own website search API (new, pre-order and pre-owned)."""
+    resp = session.get(
+        "https://api.amiami.com/api/v1.0/items",
+        params={"pagemax": 30, "pagecnt": 1, "lang": "jpn", "s_keywords": query},
+        headers={
+            "User-Agent": BROWSER_UA,
+            "Accept": "application/json",
+            "Referer": "https://www.amiami.com/",
+            "Origin": "https://www.amiami.com",
+            "X-User-Key": "amiami_dev",
+        },
+        timeout=30,
+    )
+    if looks_blocked(resp):
+        raise SiteBlocked(f"AmiAmi blocked the request (HTTP {resp.status_code})")
+    resp.raise_for_status()
+    data = resp.json()
+    out = []
+    for it in data.get("items") or []:
+        if it.get("order_closed_flg") == 1:
+            continue
+        if not any(it.get(k) == 1 for k in ("instock_flg", "preorderitem", "backorderitem")):
+            if any(k in it for k in ("instock_flg", "preorderitem", "backorderitem")):
+                continue  # AmiAmi says it can't be ordered right now
+        code = it.get("scode") or it.get("gcode")
+        if not code:
+            continue
+        key = "scode" if it.get("scode") else "gcode"
+        thumb = it.get("thumb_url")
+        if thumb and thumb.startswith("/"):
+            thumb = "https://img.amiami.com" + thumb
+        title = it.get("gname", "")
+        if it.get("preorderitem") == 1:
+            title = "[Pre-order] " + title
+        out.append({
+            "id": code,
+            "title": title,
+            "price": parse_price(it.get("c_price_taxed") or it.get("min_price")),
+            "url": f"https://www.amiami.com/eng/detail/?{key}={code}",
+            "image": thumb,
+            "text": title,
+        })
+    return out
+
+
+def search_mandarake(session, query):
+    url = "https://order.mandarake.co.jp/order/listPage/list?keyword={q}".format(q=quote(query))
+    resp = session.get(url, headers=HEADERS, timeout=30)
+    if looks_blocked(resp):
+        raise SiteBlocked(f"Mandarake blocked the request (HTTP {resp.status_code})")
+    resp.raise_for_status()
+    pattern = re.compile(r"mandarake\.co\.jp/order/detailPage/item\?itemCode=(\d+)")
+    items = extract_items(resp.text, url, pattern)
+    sold = ("売り切れ", "SOLD OUT", "Sold out", "在庫なし")
+    return [i for i in items if not any(s in i["text"] for s in sold)]
+
+
+def search_yahoo_flea(session, query):
+    """Yahoo! Flea Market (formerly PayPay Flea Market)."""
+    api = "https://paypayfleamarket.yahoo.co.jp/api/v1/search"
+    try:
+        resp = session.get(
+            api,
+            params={
+                "query": query, "results": 50, "imageShape": "square",
+                "sort": "openTime", "order": "desc", "webp": "false",
+                "itemStatus": "open",
+            },
+            headers={**HEADERS, "Accept": "application/json",
+                     "Referer": "https://paypayfleamarket.yahoo.co.jp/"},
+            timeout=30,
+        )
+        if resp.status_code == 200 and resp.text.lstrip().startswith("{"):
+            out = []
+            for it in resp.json().get("items") or []:
+                if str(it.get("itemStatus", "OPEN")).upper() != "OPEN":
+                    continue
+                iid = str(it.get("id", ""))
+                if not iid:
+                    continue
+                out.append({
+                    "id": iid,
+                    "title": it.get("title", ""),
+                    "price": parse_price(it.get("price")),
+                    "url": f"https://paypayfleamarket.yahoo.co.jp/item/{iid}",
+                    "image": it.get("thumbnailImageUrl") or it.get("thumbnail"),
+                    "text": it.get("title", ""),
+                })
+            return out
+    except (requests.RequestException, ValueError):
+        pass
+    # Fallback: read the normal search page.
+    url = "https://paypayfleamarket.yahoo.co.jp/search/{q}?open=1".format(q=quote(query))
+    resp = session.get(url, headers=HEADERS, timeout=30)
+    if looks_blocked(resp):
+        raise SiteBlocked(f"Yahoo Flea Market blocked the request (HTTP {resp.status_code})")
+    resp.raise_for_status()
+    pattern = re.compile(r"paypayfleamarket\.yahoo\.co\.jp/item/(\w+)")
+    items = extract_items(resp.text, url, pattern)
+    return [i for i in items if "SOLD" not in i["text"].upper()]
+
+
+def search_rakuma(session, query):
+    url = (
+        "https://fril.jp/s?query={q}&transaction=selling&sort=created_at&order=desc"
+    ).format(q=quote(query))
+    resp = session.get(url, headers=HEADERS, timeout=30)
+    if looks_blocked(resp):
+        raise SiteBlocked(f"Rakuma blocked the request (HTTP {resp.status_code})")
+    resp.raise_for_status()
+    pattern = re.compile(r"item\.fril\.jp/([0-9a-f]{16,})")
+    items = extract_items(resp.text, url, pattern)
+    return [i for i in items if "SOLD" not in i["text"].upper() and "売り切れ" not in i["text"]]
+
+
 def search_rakuten(session, query, max_price=None):
     app_id = os.environ.get("RAKUTEN_APP_ID")
     access_key = os.environ.get("RAKUTEN_ACCESS_KEY")
@@ -449,22 +574,34 @@ def diff_results(state, figure_name, site, items, ts):
 # Discord
 # ---------------------------------------------------------------------------
 
-def get_gbp_rate():
-    try:
-        r = requests.get(
-            "https://api.frankfurter.app/latest?from=JPY&to=GBP", timeout=10
-        )
-        return float(r.json()["rates"]["GBP"])
-    except Exception:
-        return None
+CURRENCY_SYMBOLS = {"GBP": "£", "USD": "US$", "CAD": "C$", "EUR": "€", "AUD": "A$"}
 
 
-def fmt_price(price, gbp_rate):
+def get_rates(currencies):
+    """Today's yen exchange rates, e.g. {"GBP": 0.0051, "USD": 0.0066}."""
+    if not currencies:
+        return {}
+    wanted = ",".join(c.upper() for c in currencies)
+    for url in (
+        f"https://api.frankfurter.dev/v1/latest?base=JPY&symbols={wanted}",
+        f"https://api.frankfurter.app/latest?from=JPY&to={wanted}",
+    ):
+        try:
+            rates = requests.get(url, timeout=10).json()["rates"]
+            return {c.upper(): float(rates[c.upper()]) for c in currencies if c.upper() in rates}
+        except Exception:
+            continue
+    log("Couldn't get exchange rates this time - showing yen only.")
+    return {}
+
+
+def fmt_price(price, rates):
     if not price:
         return "price not shown"
     s = f"¥{price:,}"
-    if gbp_rate:
-        s += f" (≈ £{price * gbp_rate:,.0f})"
+    if rates:
+        parts = [f"{CURRENCY_SYMBOLS.get(c, c + ' ')}{price * r:,.0f}" for c, r in rates.items()]
+        s += " (≈ " + " · ".join(parts) + ")"
     return s
 
 
@@ -493,11 +630,18 @@ class Discord:
         log("Discord kept rate limiting; giving up on this message.")
 
 
-LABELS = {"new": "New listing", "back": "Back in stock", "drop": "Price drop"}
+LABELS = {
+    "new": "New listing",
+    "back": "Back in stock",
+    "drop": "Price drop",
+    "listed": "For sale now",
+}
+# On the very first check, show at most this many current listings per site.
+MAX_FIRST_RUN_PER_SITE = 20
 
 
-def build_embed(kind, item, site, old_price, gbp_rate):
-    price_line = fmt_price(item["price"], gbp_rate)
+def build_embed(kind, item, site, old_price, rates):
+    price_line = fmt_price(item["price"], rates)
     if kind == "drop":
         price_line = f"~~¥{old_price:,}~~ → {price_line}"
     embed = {
@@ -536,7 +680,10 @@ def run(dry_run=False):
     if not webhook and not dry_run:
         raise SystemExit("DISCORD_WEBHOOK_URL is not set (add it as a GitHub secret).")
     discord = Discord(webhook, dry_run=dry_run)
-    gbp_rate = get_gbp_rate() if settings.get("show_gbp", True) else None
+    currencies = settings.get("currencies")
+    if currencies is None:
+        currencies = ["GBP"] if settings.get("show_gbp", True) else []
+    rates = get_rates(currencies)
 
     state = load_state()
     ts = now_ts()
@@ -549,6 +696,7 @@ def run(dry_run=False):
         name = fig["name"]
         sites = fig.get("sites") or default_sites
         fig_embeds = []
+        first_embeds = []
         baseline_counts = []
 
         for site in sites:
@@ -559,7 +707,7 @@ def run(dry_run=False):
                 continue  # don't keep hammering a site that's blocking us
             # JAN barcodes work well on shops; marketplaces need words.
             query = fig.get("search")
-            if fig.get("jan") and (site in ("surugaya", "rakuten") or not query):
+            if fig.get("jan") and (site in ("surugaya", "rakuten", "amiami") or not query):
                 query = str(fig["jan"])
             try:
                 if site == "mercari":
@@ -568,6 +716,14 @@ def run(dry_run=False):
                     found = search_yahoo(session, query)
                 elif site == "surugaya":
                     found = search_surugaya(session, query)
+                elif site == "yahooflea":
+                    found = search_yahoo_flea(session, query)
+                elif site == "rakuma":
+                    found = search_rakuma(session, query)
+                elif site == "amiami":
+                    found = search_amiami(session, query)
+                elif site == "mandarake":
+                    found = search_mandarake(session, query)
                 else:
                     found = search_rakuten(session, query, fig.get("max_price"))
                     if found is None:
@@ -587,25 +743,34 @@ def run(dry_run=False):
                 fig_for_match["include_any"] = []
             good = [i for i in found if matches(i, fig_for_match, global_exclude)]
             log(f"{name} @ {SITE_NAMES[site]}: {len(found)} results, {len(good)} match")
+            for i in good:
+                price = f"¥{i['price']:,}" if i["price"] else "¥?"
+                log(f"    {price:>10}  {i['title'][:60]}  {i['url']}")
             summary.append((name, site, len(found), len(good)))
 
             alerts, baselining = diff_results(state, name, site, good, ts)
             if baselining:
-                cheapest = min((i["price"] for i in good if i["price"]), default=None)
-                baseline_counts.append(
-                    f"{SITE_NAMES[site]}: {len(good)} listed"
-                    + (f", cheapest {fmt_price(cheapest, gbp_rate)}" if cheapest else "")
-                )
+                # First time for this figure+site: show everything already for
+                # sale (cheapest first), each with its own link.
+                listed = sorted(good, key=lambda i: i["price"] or 10**12)
+                baseline_counts.append(f"{SITE_NAMES[site]}: {len(good)}")
+                for item in listed[:MAX_FIRST_RUN_PER_SITE]:
+                    first_embeds.append(build_embed("listed", item, site, None, rates))
+                if len(listed) > MAX_FIRST_RUN_PER_SITE:
+                    baseline_counts[-1] += f" (showing cheapest {MAX_FIRST_RUN_PER_SITE})"
             for kind, item, old in alerts:
-                fig_embeds.append(build_embed(kind, item, site, old, gbp_rate))
+                fig_embeds.append(build_embed(kind, item, site, old, rates))
 
         if baseline_counts:
             discord.send(
-                f"👀 Now watching **{name}**. What's listed right now (you'll only "
-                "be pinged about new ones from here on):\n• " + "\n• ".join(baseline_counts)
+                f"👀🎀 Now watching **{name}**. For sale right now: "
+                + " · ".join(baseline_counts)
+                + ("" if first_embeds else "\nNothing listed yet. You'll be pinged when something appears.")
             )
+            for i in range(0, len(first_embeds), 10):
+                discord.send(embeds=first_embeds[i:i + 10])
         for i in range(0, len(fig_embeds), 10):
-            discord.send(content=f"🔔 **{name}**", embeds=fig_embeds[i:i + 10])
+            discord.send(content=f"👀🎀 **{name}**", embeds=fig_embeds[i:i + 10])
 
     # Failure tracking: warn once if a site keeps failing.
     for site in SITE_NAMES:
