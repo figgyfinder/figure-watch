@@ -194,6 +194,8 @@ def search_yahoo(session, query, kind=None):
     if kind == "scale":
         url += "&auccat=25888"  # Yahoo's figure category
     resp = session.get(url, headers=HEADERS, timeout=30)
+    if resp.status_code == 404:
+        return []  # Yahoo answers "not found" when a search has no results
     if looks_blocked(resp) or "ご利用いただけません" in resp.text[:5000]:
         raise SiteBlocked(f"Yahoo blocked the request (HTTP {resp.status_code})")
     resp.raise_for_status()
@@ -372,10 +374,19 @@ def search_amiami(session, query, kind=None):
         title = it.get("gname", "")
         if it.get("preorderitem") == 1:
             title = "[Pre-order] " + title
+        # AmiAmi keeps the maker outside the title; use it for matching.
+        extra = " ".join(
+            str(v) for k, v in it.items()
+            if isinstance(v, str) and ("maker" in k.lower() or "brand" in k.lower())
+        )
+        # min_price is what it actually sells for (pre-owned prices can be far
+        # from the original list price in c_price_taxed).
+        price = parse_price(it.get("min_price") or it.get("max_price") or it.get("c_price_taxed"))
         out.append({
             "id": code,
             "title": title,
-            "price": parse_price(it.get("c_price_taxed") or it.get("min_price")),
+            "extra": extra,
+            "price": price,
             "url": f"https://www.amiami.com/eng/detail/?{key}={code}",
             "image": thumb,
             "text": title,
@@ -576,7 +587,7 @@ def _flat(words):
 def contradiction(item, figure):
     """Return a reason if the title shows this is a DIFFERENT item
     (another product line, maker, scale, outfit, bootleg, doll clothes...)."""
-    raw = strip_bonus(item["title"])
+    raw = strip_bonus(item["title"] + " " + item.get("extra", ""))
     title = normalise(raw)
     own = normalise(" ".join(
         [figure.get("name", ""), figure.get("search", "")]
@@ -595,6 +606,10 @@ def contradiction(item, figure):
         for w in DOLL_ACCESSORY_WORDS:
             if normalise(w) in title:
                 return f"doll accessory ({w})"
+        # Dollfie Dreams are 1/3 (Mini DD ~1/4) and aren't PVC figures
+        small = [sc for sc in re.findall(r"1/(\d+)", title) if int(sc) >= 5]
+        if small or any(normalise(w) in title for w in ["完成品フィギュア", "PVC", "塗装済み完成品", "スケールフィギュア"]):
+            return "a figure, not a doll"
     if kind == "scale" and any(normalise(w) in title for w in KIT_WORDS) and "ガレージキット" not in own:
         return "garage kit"
     scale = figure.get("scale")
@@ -620,7 +635,7 @@ def contradiction(item, figure):
 def match_level(item, figure, global_exclude, figure_words):
     """Returns "exact", "maybe" (right character + looks like a figure, but
     maker/version not confirmed), or None (not relevant)."""
-    raw = strip_bonus(item["title"])
+    raw = strip_bonus(item["title"] + " " + item.get("extra", ""))
     title = normalise(raw)
     for word in list(figure.get("exclude") or []) + list(global_exclude or []):
         if normalise(word) and normalise(word) in title:
@@ -651,11 +666,16 @@ def match_level(item, figure, global_exclude, figure_words):
     type_words = TYPE_WORDS.get(kind, figure_words)
     if not any(normalise(w) in title for w in type_words):
         return None
+    # Right character + the figure's exact scale + nothing contradicting it
+    # is confirmation enough.
+    scale = figure.get("scale")
+    if kind == "scale" and scale and normalise(scale) in set(re.findall(r"1/\d+", title)):
+        return "exact"
     return "maybe"
 
 
 def matches(item, figure, global_exclude):
-    title = normalise(strip_bonus(item["title"]))
+    title = normalise(strip_bonus(item["title"] + " " + item.get("extra", "")))
     for word in list(figure.get("exclude") or []) + list(global_exclude or []):
         if normalise(word) and normalise(word) in title:
             return False
@@ -838,7 +858,7 @@ OTHER_LINES = [
     "アクリル", "ジオラマ", "ぴたぬい", "ぬいパル", "寝そべり", "ねそべり", "フィギュアーツ",
     "キューポッシュ", "Qposket", "ちびぐるみ", "ミニコレ", "ぺたん娘", "まめしき", "フィギュアライズ",
     "ガシャポン", "クレーンゲーム", "ちょこのっこ", "デスクトップキュート", "ぬーどる", "ひっかけ",
-    "テニトル", "プーリップ", "ワーコレ", "WCF", "超合金", "マスコット",
+    "テニトル", "プーリップ", "モエコレ", "ノンスケール", "ワーコレ", "WCF", "超合金", "マスコット",
 ]
 
 # Figure makers - a "possible match" naming a maker that isn't this figure's

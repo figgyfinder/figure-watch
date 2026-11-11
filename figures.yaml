@@ -61,7 +61,7 @@ figures:
     maker: ["ボークス", "VOLKS"]
     jan: "4518992385389"
     must_include: ["ベアトリーチェ"]
-    include_any: ["DD", "ドルフィー", "ボークス", "VOLKS"]
+    include_any: ["DD", "ドルフィー", "Dollfie"]
     exclude: ["衣装のみ", "ウィッグのみ"]
 
   - name: "Maria & Sakutarou Mini Dollfie Dream (Volks)"       # MFC 32588
@@ -70,7 +70,7 @@ figures:
     maker: ["ボークス", "VOLKS"]
     character: [["マリア", "真里亞", "さくたろ"]]
     must_include: []
-    include_any: [["マリア", "真里亞", "さくたろ"], ["MDD", "DD", "ドルフィー", "ボークス", "VOLKS"]]
+    include_any: [["マリア", "真里亞", "さくたろ"], ["MDD", "DD", "ドルフィー", "Dollfie"]]
     exclude: ["衣装のみ", "ウィッグのみ"]
 
   - name: "Kusugawa Sasara Dollfie Dream (Volks)"              # MFC 13535
@@ -79,7 +79,7 @@ figures:
     maker: ["ボークス", "VOLKS"]
     jan: "4518992378565"
     must_include: ["ささら"]
-    include_any: ["DD", "ドルフィー", "ボークス", "VOLKS"]
+    include_any: ["DD", "ドルフィー", "Dollfie"]
     exclude: ["衣装のみ", "ウィッグのみ"]
 
   # ── Sayonara o Oshiete ────────────────────────────────────
